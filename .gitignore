@@ -1,0 +1,7 @@
+# Local environment files can contain credentials. Keep checked-in examples.
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example

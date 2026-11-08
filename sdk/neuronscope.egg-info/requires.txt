@@ -1,0 +1,7 @@
+httpx>=0.25
+keyring>=25.6
+numpy>=1.23
+torch>=2.0
+
+[test]
+pytest>=7
