@@ -57,9 +57,11 @@ WebSocket URL.
 
 Serve the dashboard and API under the same site, preferably via a reverse proxy.
 For a separate frontend/API origin, configure CORS and `DASHBOARD_ORIGINS`
-exactly, use HTTPS for both, and validate browser cookie behavior for your
-deployment's site boundaries. Do not weaken cookie, CSRF, or origin checks to
-make cross-site cookies work.
+exactly and use HTTPS for both. If the origins are cross-site, set backend
+`SESSION_COOKIE_SAMESITE=none` while keeping `SESSION_COOKIE_SECURE=true`.
+Browser privacy settings may still block third-party cookies; custom frontend
+and API subdomains under the same registrable domain are more reliable. Do not
+weaken CSRF or origin checks to make cross-site cookies work.
 
 ## SDK onboarding
 

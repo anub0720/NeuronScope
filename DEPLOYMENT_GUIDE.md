@@ -59,6 +59,7 @@ production `.env` file.
 | `DASHBOARD_ORIGINS` | JSON array of exact trusted dashboard origins |
 | `CORS_ORIGINS` | JSON array of exact browser origins allowed by CORS |
 | `SESSION_COOKIE_SECURE` | `true` in production |
+| `SESSION_COOKIE_SAMESITE` | `lax` for same-site hosting; `none` for cross-site HTTPS |
 | `SMTP_HOST` | SMTP server hostname |
 | `SMTP_PORT` | SMTP server port, commonly `587` |
 | `SMTP_USERNAME` | SMTP account name |
@@ -74,11 +75,38 @@ DASHBOARD_BASE_URL=https://neuronscope.example.com
 DASHBOARD_ORIGINS=["https://neuronscope.example.com"]
 CORS_ORIGINS=["https://neuronscope.example.com"]
 SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAMESITE=lax
 ```
 
 The origin variables must be valid JSON arrays, not comma-separated lists.
 Never use `*` for credentialed browser access. Add every additional trusted
 origin explicitly and only when necessary.
+
+When dashboard and API use different sites (for example the default Vercel and
+Render hostnames), set `SESSION_COOKIE_SAMESITE=none` and keep
+`SESSION_COOKIE_SECURE=true`. The browser then permits the cross-site cookie
+where third-party cookies are allowed. Browser privacy settings can still block
+third-party cookies; for reliable sessions, use custom dashboard and API
+subdomains under the same registrable domain and keep `SESSION_COOKIE_SAMESITE=lax`.
+
+For the current Vercel/Render hostnames, configure these non-secret values in
+the Render backend environment:
+
+```text
+DASHBOARD_BASE_URL=https://neuronscope-dashboard.vercel.app
+DASHBOARD_ORIGINS=["https://neuronscope-dashboard.vercel.app"]
+CORS_ORIGINS=["https://neuronscope-dashboard.vercel.app"]
+SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAMESITE=none
+```
+
+In Vercel, keep `VITE_API_BASE_URL=https://neuronscope-api.onrender.com` as a
+build-time variable. Rebuild/redeploy the frontend only if that value changes.
+The dashboard/API default hostnames are cross-site, so browser privacy policies
+that block third-party cookies may still require moving to custom subdomains
+under one registrable domain. The session cookie is host-only for the API; in
+browser storage, inspect cookies under `https://neuronscope-api.onrender.com`,
+not the Vercel dashboard origin. Do not set a cookie `Domain` attribute.
 
 #### Temporary private-team email-verification setting
 

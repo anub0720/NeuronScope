@@ -2,6 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, createApiClient } from "./api";
 
 describe("cookie-authenticated FastAPI client", () => {
+  it("includes credentials on login and subsequent authenticated requests", async () => {
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          user: { id: "u1", email: "u@example.test" },
+          csrf_token: "csrf",
+        }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }));
+    const client = createApiClient("https://neuronscope-api.onrender.com", fetcher);
+
+    await client.login("u@example.test", "password");
+    await client.listProjects();
+
+    expect(fetcher.mock.calls[0][1]?.credentials).toBe("include");
+    expect(fetcher.mock.calls[1][1]?.credentials).toBe("include");
+  });
+
   it("uses the HttpOnly session cookie and scopes requests to a selected project", async () => {
     const fetcher = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(

@@ -1,6 +1,7 @@
 """Backend configuration."""
 import re
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,7 @@ class Settings(BaseSettings):
     DASHBOARD_BASE_URL: str = "http://localhost:5173"
     DASHBOARD_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     SESSION_COOKIE_SECURE: bool = True
+    SESSION_COOKIE_SAMESITE: Literal["lax", "strict", "none"] = "lax"
     SESSION_TTL_SECONDS: int = Field(default=43200, ge=300, le=2592000)
     ACCOUNT_TOKEN_TTL_SECONDS: int = Field(default=3600, ge=300, le=86400)
     DEVICE_AUTH_TTL_SECONDS: int = Field(default=600, ge=60, le=1800)
@@ -61,6 +63,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ALLOWED_REGISTRATION_EMAIL_DOMAINS is required when "
                 "REQUIRE_EMAIL_VERIFICATION is false"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def require_secure_cookie_for_cross_site_sessions(self):
+        if self.SESSION_COOKIE_SAMESITE == "none" and not self.SESSION_COOKIE_SECURE:
+            raise ValueError(
+                "SESSION_COOKIE_SECURE must be true when "
+                "SESSION_COOKIE_SAMESITE is none"
             )
         return self
 

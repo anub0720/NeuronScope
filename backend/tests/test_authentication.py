@@ -1,6 +1,9 @@
 import re
 import unittest
+from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from fastapi.testclient import TestClient
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -11,7 +14,14 @@ from app import auth
 from app.config import Settings, settings
 from app.database import Base, get_db
 from app.main import app
-from app.models import AccountToken, Experiment, Project, ProjectAPIKey, User
+from app.models import (
+    AccountToken,
+    Experiment,
+    Project,
+    ProjectAPIKey,
+    User,
+    UserSession,
+)
 from app.routes import authentication
 from app.rate_limit import reset_rate_limits
 from app.state import live_state
@@ -29,6 +39,13 @@ class AuthenticationIntegrationTests(unittest.TestCase):
         self.assertTrue(Settings(**config).REQUIRE_EMAIL_VERIFICATION)
         with self.assertRaises(ValidationError):
             Settings(**config, REQUIRE_EMAIL_VERIFICATION=False)
+        self.assertEqual(Settings(**config).SESSION_COOKIE_SAMESITE, "lax")
+        with self.assertRaises(ValidationError):
+            Settings(
+                **config,
+                SESSION_COOKIE_SECURE=False,
+                SESSION_COOKIE_SAMESITE="none",
+            )
 
         private_team = Settings(
             **config,
@@ -59,6 +76,8 @@ class AuthenticationIntegrationTests(unittest.TestCase):
             "DASHBOARD_BASE_URL": settings.DASHBOARD_BASE_URL,
             "DASHBOARD_ORIGINS": settings.DASHBOARD_ORIGINS,
             "SESSION_COOKIE_SECURE": settings.SESSION_COOKIE_SECURE,
+            "SESSION_COOKIE_SAMESITE": settings.SESSION_COOKIE_SAMESITE,
+            "SESSION_TTL_SECONDS": settings.SESSION_TTL_SECONDS,
             "REQUIRE_EMAIL_VERIFICATION": settings.REQUIRE_EMAIL_VERIFICATION,
             "ALLOWED_REGISTRATION_EMAIL_DOMAINS": (
                 settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS
@@ -71,6 +90,7 @@ class AuthenticationIntegrationTests(unittest.TestCase):
         settings.DASHBOARD_BASE_URL = "http://testserver"
         settings.DASHBOARD_ORIGINS = ["http://testserver"]
         settings.SESSION_COOKIE_SECURE = False
+        settings.SESSION_COOKIE_SAMESITE = "lax"
         self.sent_emails = []
         self.original_sender = authentication._send_email
         authentication._send_email = (
@@ -187,6 +207,85 @@ class AuthenticationIntegrationTests(unittest.TestCase):
         self.assertNotEqual(second_credentials["api_key"], credentials["api_key"])
         self.assertIsNotNone(auth.project_for_api_key(credentials["api_key"]))
         self.assertIsNotNone(auth.project_for_api_key(second_credentials["api_key"]))
+
+    def test_cross_site_session_cookie_survives_reload_and_expires_with_server_session(self):
+        email = self._register_and_verify()
+        settings.SESSION_COOKIE_SECURE = True
+        settings.SESSION_COOKIE_SAMESITE = "none"
+        settings.SESSION_TTL_SECONDS = 1800
+
+        with TestClient(app, base_url="https://testserver") as client:
+            response = client.post(
+                "/api/v1/auth/login",
+                json={"email": email, "password": "a secure password 123"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertIn("ns_session=", response.headers["set-cookie"])
+
+            cookie = SimpleCookie()
+            cookie.load(response.headers["set-cookie"])
+            session_cookie = cookie["ns_session"]
+            self.assertEqual(session_cookie["path"], "/")
+            self.assertEqual(session_cookie["domain"], "")
+            self.assertEqual(session_cookie["max-age"], "1800")
+            self.assertEqual(session_cookie["samesite"], "none")
+            self.assertTrue(session_cookie["secure"])
+            self.assertTrue(session_cookie["httponly"])
+
+            db = self.sessions()
+            try:
+                session = db.query(UserSession).one()
+                expiry = session.expires_at
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=timezone.utc)
+                remaining = (expiry - datetime.now(timezone.utc)).total_seconds()
+                self.assertGreater(remaining, 1790)
+                self.assertLessEqual(remaining, 1800)
+            finally:
+                db.close()
+
+            self.assertEqual(client.get("/api/v1/auth/session").status_code, 200)
+            self.assertEqual(client.get("/api/v1/projects").status_code, 200)
+
+            reloaded_client = TestClient(app, base_url="https://testserver")
+            reloaded_client.cookies.update(client.cookies)
+            self.assertEqual(
+                reloaded_client.get("/api/v1/auth/session").status_code, 200
+            )
+            self.assertEqual(
+                reloaded_client.get("/api/v1/projects").status_code, 200
+            )
+
+            db = self.sessions()
+            try:
+                session = db.query(UserSession).one()
+                session.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+                db.commit()
+            finally:
+                db.close()
+            self.assertEqual(
+                reloaded_client.get("/api/v1/auth/session").status_code, 401
+            )
+            reloaded_client.close()
+
+    def test_cors_preflight_allows_configured_origin_with_credentials(self):
+        cors = next(
+            middleware
+            for middleware in app.user_middleware
+            if middleware.cls is CORSMiddleware
+        )
+        origin = cors.kwargs["allow_origins"][0]
+        response = self.client.options(
+            "/api/v1/auth/login",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
+        self.assertEqual(response.headers["access-control-allow-credentials"], "true")
 
     def test_disabled_verification_supports_team_signup_login_resend_reset_and_device_flow(self):
         settings.REQUIRE_EMAIL_VERIFICATION = False

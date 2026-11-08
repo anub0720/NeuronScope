@@ -12,6 +12,7 @@ DASHBOARD_BASE_URL=https://dashboard.example.com
 DASHBOARD_ORIGINS=["https://dashboard.example.com"]
 CORS_ORIGINS=["https://dashboard.example.com"]
 SESSION_COOKIE_SECURE=true
+SESSION_COOKIE_SAMESITE=lax
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USERNAME=...
@@ -31,6 +32,12 @@ set `SESSION_COOKIE_SECURE=false` when using plain HTTP localhost, and configure
 the exact local dashboard origin in both origin lists. Keep Secure cookies
 enabled in production and serve the frontend/API same-site, preferably through
 a reverse proxy.
+
+If the dashboard and API are on different sites, set
+`SESSION_COOKIE_SAMESITE=none` while keeping `SESSION_COOKIE_SECURE=true`.
+Browsers may block third-party cookies regardless of this setting, so separate
+default hosting domains are not as reliable as custom dashboard and API
+subdomains under the same registrable domain.
 
 `REQUIRE_EMAIL_VERIFICATION` defaults to `true`. For an initial private-team
 deployment that temporarily disables verification, set it to `false` and set
