@@ -622,9 +622,13 @@ export default function App() {
     setAuthNotice("");
     try {
       if (authMode === "register") {
-        await api.register(authEmail, authPassword);
+        const result = await api.register(authEmail, authPassword);
         setAuthMode("login");
-        setAuthNotice("Check your email for a verification link before signing in.");
+        setAuthNotice(
+          result.status === "registered"
+            ? "Account created. You can sign in now."
+            : "Check your email for a verification link before signing in.",
+        );
       } else if (authMode === "reset" && resetToken) {
         await api.resetPassword(resetToken, newPassword);
         setResetToken("");

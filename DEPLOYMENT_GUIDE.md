@@ -80,6 +80,31 @@ The origin variables must be valid JSON arrays, not comma-separated lists.
 Never use `*` for credentialed browser access. Add every additional trusted
 origin explicitly and only when necessary.
 
+#### Temporary private-team email-verification setting
+
+Email verification remains required by default
+(`REQUIRE_EMAIL_VERIFICATION=true`). To temporarily let a private team sign in
+without verifying email, set these in the Render backend service's Environment
+settings:
+
+```text
+REQUIRE_EMAIL_VERIFICATION=false
+ALLOWED_REGISTRATION_EMAIL_DOMAINS=["your-team.example"]
+```
+
+Use the team's exact email domain(s), as a JSON list. The backend refuses to
+start if verification is disabled without a non-empty domain allowlist, and it
+rejects registrations outside the list. This restricts registration by domain
+but does not prove that the registrant controls that mailbox. Keep the service
+private or behind additional access controls if domain-only membership is not
+sufficient. No existing account or password is changed. New accounts remain
+marked unverified; turning verification back on makes unverified accounts
+verify before their next login. Registration does not send verification mail
+while disabled; resend-verification becomes a no-op. Password-reset still
+requires SMTP because it sends a reset link. Configure SMTP as usual if users
+need password recovery. Return `REQUIRE_EMAIL_VERIFICATION=true` to restore the
+default flow; no migration is needed.
+
 Generate a server secret locally and put it directly into the deployment
 secret manager; do not check it into the repository:
 

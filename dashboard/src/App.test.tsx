@@ -239,6 +239,55 @@ describe("dashboard integration", () => {
     expect(mocks.listProjects).toHaveBeenCalled();
   });
 
+  it("explains that a newly registered account can sign in when verification is disabled", async () => {
+    mocks.getSession.mockRejectedValueOnce(
+      Object.assign(new Error("Dashboard login required"), { status: 401 }),
+    );
+    mocks.register.mockResolvedValueOnce({ status: "registered" });
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sign in" });
+    fireEvent.click(screen.getByRole("button", { name: "Create an account" }));
+    fireEvent.change(screen.getByLabelText("Email address"), {
+      target: { value: "member@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "a secure password 123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(await screen.findByText("Account created. You can sign in now."))
+      .toBeInTheDocument();
+    expect(mocks.register).toHaveBeenCalledWith(
+      "member@example.test",
+      "a secure password 123",
+    );
+  });
+
+  it("keeps the email-verification instructions when verification is required", async () => {
+    mocks.getSession.mockRejectedValueOnce(
+      Object.assign(new Error("Dashboard login required"), { status: 401 }),
+    );
+    mocks.register.mockResolvedValueOnce({ status: "verification_sent" });
+    const { default: App } = await import("./App");
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sign in" });
+    fireEvent.click(screen.getByRole("button", { name: "Create an account" }));
+    fireEvent.change(screen.getByLabelText("Email address"), {
+      target: { value: "member@example.test" },
+    });
+    fireEvent.change(screen.getByLabelText("Password"), {
+      target: { value: "a secure password 123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    expect(await screen.findByText(
+      "Check your email for a verification link before signing in.",
+    )).toBeInTheDocument();
+  });
+
   it("creates a project and displays a newly issued credential only in the issuance response", async () => {
     const { default: App } = await import("./App");
     render(<App />);

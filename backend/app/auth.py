@@ -114,7 +114,9 @@ def _session_identity(raw_session: str | None) -> SessionIdentity | None:
         if expiry <= now:
             return None
         user = db.query(User).filter_by(id=session.user_id).first()
-        if user is None or not user.email_verified:
+        if user is None or (
+            settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified
+        ):
             return None
         csrf_token = _csrf_token(raw_session)
         if not hmac.compare_digest(

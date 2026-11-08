@@ -23,10 +23,12 @@ forwards API and WebSocket traffic. HTTPS API origins automatically use WSS.
 There is deliberately no `VITE_API_KEY`: values prefixed with `VITE_` are
 public and must never contain a permanent credential.
 
-Dashboard registration, verification, login, reset, and SDK device approval
-require backend SMTP configuration. For local-only development, configure SMTP
-to a local test sink and set `SESSION_COOKIE_SECURE=false`; do not use that
-cookie setting in production.
+Email verification and password-reset delivery require backend SMTP
+configuration. With `REQUIRE_EMAIL_VERIFICATION=false`, registration, login,
+and SDK device approval do not need SMTP; resend-verification is a no-op, while
+password reset still needs SMTP. For local-only development, configure SMTP to
+a local test sink when testing verification or password reset, and set
+`SESSION_COOKIE_SECURE=false`; do not use that cookie setting in production.
 
 ## Backend deployment
 
@@ -41,7 +43,13 @@ manager (never through dashboard build variables):
   `SMTP_FROM_EMAIL`, and `SMTP_USE_TLS`
 
 Apply the database migration before deploying the authenticated dashboard.
-Email verification is mandatory. The dashboard uses short-lived HttpOnly
+Email verification is required by default and can be temporarily disabled for a
+private team deployment with `REQUIRE_EMAIL_VERIFICATION=false` and a non-empty
+`ALLOWED_REGISTRATION_EMAIL_DOMAINS` allowlist. The backend refuses to start
+without that allowlist when verification is disabled. See the root deployment
+guide for the domain-only access trade-off and SMTP requirements.
+
+The dashboard uses short-lived HttpOnly
 session cookies, sends the session CSRF token for mutations, and scopes requests
 to an owned project with `X-Project-ID`. WebSockets use the session cookie and
 the selected project ID; no API key is placed in browser JavaScript or the

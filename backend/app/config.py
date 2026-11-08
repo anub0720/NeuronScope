@@ -1,7 +1,8 @@
 """Backend configuration."""
+import re
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -20,6 +21,8 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = Field(default=43200, ge=300, le=2592000)
     ACCOUNT_TOKEN_TTL_SECONDS: int = Field(default=3600, ge=300, le=86400)
     DEVICE_AUTH_TTL_SECONDS: int = Field(default=600, ge=60, le=1800)
+    REQUIRE_EMAIL_VERIFICATION: bool = True
+    ALLOWED_REGISTRATION_EMAIL_DOMAINS: list[str] = Field(default_factory=list)
     SMTP_HOST: str | None = None
     SMTP_PORT: int = Field(default=587, ge=1, le=65535)
     SMTP_USERNAME: str | None = None
@@ -35,6 +38,31 @@ class Settings(BaseSettings):
     MAX_REQUEST_BYTES: int = Field(default=1048576, ge=1024)
     EXPERIMENT_IDLE_SECONDS: int = Field(default=1800, ge=1)
     CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+
+    @field_validator("ALLOWED_REGISTRATION_EMAIL_DOMAINS")
+    @classmethod
+    def normalize_registration_domains(cls, domains: list[str]) -> list[str]:
+        normalized = [domain.strip().casefold() for domain in domains]
+        domain_pattern = re.compile(
+            r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$"
+        )
+        if any(not domain_pattern.fullmatch(domain) for domain in normalized):
+            raise ValueError(
+                "ALLOWED_REGISTRATION_EMAIL_DOMAINS must contain exact DNS domains"
+            )
+        return normalized
+
+    @model_validator(mode="after")
+    def require_registration_allowlist_without_email_verification(self):
+        if (
+            not self.REQUIRE_EMAIL_VERIFICATION
+            and not self.ALLOWED_REGISTRATION_EMAIL_DOMAINS
+        ):
+            raise ValueError(
+                "ALLOWED_REGISTRATION_EMAIL_DOMAINS is required when "
+                "REQUIRE_EMAIL_VERIFICATION is false"
+            )
+        return self
 
     model_config = SettingsConfigDict(
         env_file=BACKEND_DIR / ".env",

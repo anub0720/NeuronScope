@@ -5,18 +5,41 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.websockets import WebSocketDisconnect
+from pydantic import ValidationError
 
 from app import auth
-from app.config import settings
+from app.config import Settings, settings
 from app.database import Base, get_db
 from app.main import app
-from app.models import Experiment, Project, ProjectAPIKey, User
+from app.models import AccountToken, Experiment, Project, ProjectAPIKey, User
 from app.routes import authentication
 from app.rate_limit import reset_rate_limits
 from app.state import live_state
 
 
 class AuthenticationIntegrationTests(unittest.TestCase):
+    def test_verification_configuration_defaults_secure_and_requires_domain_allowlist(
+        self,
+    ):
+        config = {
+            "_env_file": None,
+            "DATABASE_URL": "sqlite:///test.db",
+            "SECRET_KEY": "test-secret-" * 5,
+        }
+        self.assertTrue(Settings(**config).REQUIRE_EMAIL_VERIFICATION)
+        with self.assertRaises(ValidationError):
+            Settings(**config, REQUIRE_EMAIL_VERIFICATION=False)
+
+        private_team = Settings(
+            **config,
+            REQUIRE_EMAIL_VERIFICATION=False,
+            ALLOWED_REGISTRATION_EMAIL_DOMAINS=["Team.Example"],
+        )
+        self.assertEqual(
+            private_team.ALLOWED_REGISTRATION_EMAIL_DOMAINS,
+            ["team.example"],
+        )
+
     def setUp(self):
         reset_rate_limits()
         self.engine = create_engine(
@@ -36,7 +59,13 @@ class AuthenticationIntegrationTests(unittest.TestCase):
             "DASHBOARD_BASE_URL": settings.DASHBOARD_BASE_URL,
             "DASHBOARD_ORIGINS": settings.DASHBOARD_ORIGINS,
             "SESSION_COOKIE_SECURE": settings.SESSION_COOKIE_SECURE,
+            "REQUIRE_EMAIL_VERIFICATION": settings.REQUIRE_EMAIL_VERIFICATION,
+            "ALLOWED_REGISTRATION_EMAIL_DOMAINS": (
+                settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS
+            ),
         }
+        settings.REQUIRE_EMAIL_VERIFICATION = True
+        settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS = []
         settings.SMTP_HOST = "smtp.test"
         settings.SMTP_FROM_EMAIL = "noreply@example.test"
         settings.DASHBOARD_BASE_URL = "http://testserver"
@@ -158,6 +187,181 @@ class AuthenticationIntegrationTests(unittest.TestCase):
         self.assertNotEqual(second_credentials["api_key"], credentials["api_key"])
         self.assertIsNotNone(auth.project_for_api_key(credentials["api_key"]))
         self.assertIsNotNone(auth.project_for_api_key(second_credentials["api_key"]))
+
+    def test_disabled_verification_supports_team_signup_login_resend_reset_and_device_flow(self):
+        settings.REQUIRE_EMAIL_VERIFICATION = False
+        settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS = ["example.test"]
+        settings.SMTP_HOST = None
+        settings.SMTP_FROM_EMAIL = None
+
+        registered = self.client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "new-member@example.test",
+                "password": "a secure password 123",
+            },
+        )
+        self.assertEqual(registered.status_code, 200, registered.text)
+        self.assertEqual(registered.json(), {"status": "registered"})
+        self.assertEqual(self.sent_emails, [])
+
+        with self.sessions() as db:
+            new_user = db.query(User).filter_by(
+                email="new-member@example.test"
+            ).one()
+            self.assertFalse(new_user.email_verified)
+            self.assertEqual(
+                db.query(AccountToken).filter_by(
+                    user_id=new_user.id, purpose="verify_email"
+                ).count(),
+                0,
+            )
+
+        login = self.client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": "new-member@example.test",
+                "password": "a secure password 123",
+            },
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/session").status_code,
+            200,
+        )
+
+        resend = self.client.post(
+            "/api/v1/auth/resend-verification",
+            json={
+                "email": "new-member@example.test",
+                "password": "a secure password 123",
+            },
+        )
+        self.assertEqual(
+            resend.json(),
+            {"status": "verification_not_required"},
+        )
+        self.assertEqual(self.sent_emails, [])
+
+        device = self.client.post(
+            "/api/v1/auth/device",
+            json={"project_name": "Unverified team member"},
+        ).json()
+        csrf = login.json()["csrf_token"]
+        approved = self.client.post(
+            "/api/v1/auth/device/approve",
+            json={"user_code": device["user_code"]},
+            headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        token = self.client.post(
+            "/api/v1/auth/device/token",
+            json={"device_code": device["device_code"]},
+        )
+        self.assertEqual(token.status_code, 200, token.text)
+        self.assertTrue(token.json()["api_key"].startswith("ns_live_"))
+
+        settings.SMTP_HOST = "smtp.test"
+        settings.SMTP_FROM_EMAIL = "noreply@example.test"
+        reset_requested = self.client.post(
+            "/api/v1/auth/password-reset/request",
+            json={"email": "new-member@example.test"},
+        )
+        self.assertEqual(reset_requested.status_code, 200, reset_requested.text)
+        self.assertEqual(len(self.sent_emails), 1)
+        reset_token = re.search(
+            r"reset_token=([^\s]+)", self.sent_emails[-1][2]
+        )
+        self.assertIsNotNone(reset_token)
+        reset = self.client.post(
+            "/api/v1/auth/password-reset/complete",
+            json={
+                "token": reset_token.group(1),
+                "new_password": "a newer secure password 456",
+            },
+        )
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertEqual(
+            self.client.get("/api/v1/auth/session").status_code,
+            401,
+        )
+        new_password_login = self.client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": "new-member@example.test",
+                "password": "a newer secure password 456",
+            },
+        )
+        self.assertEqual(new_password_login.status_code, 200)
+
+        settings.REQUIRE_EMAIL_VERIFICATION = True
+        self.assertEqual(
+            self.client.get("/api/v1/auth/session").status_code,
+            401,
+        )
+        verification_required = self.client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": "new-member@example.test",
+                "password": "a newer secure password 456",
+            },
+        )
+        self.assertEqual(verification_required.status_code, 403)
+        with self.sessions() as db:
+            new_user = db.query(User).filter_by(
+                email="new-member@example.test"
+            ).one()
+            self.assertFalse(new_user.email_verified)
+
+    def test_existing_unverified_account_can_log_in_without_account_mutation(self):
+        settings.REQUIRE_EMAIL_VERIFICATION = False
+        settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS = ["example.test"]
+        original_password = "existing account password 789"
+        with self.sessions() as db:
+            user = User(
+                email="existing@example.test",
+                password_hash=authentication._hash_password(original_password),
+                email_verified=False,
+            )
+            db.add(user)
+            db.commit()
+            original_hash = user.password_hash
+
+        response = self.client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": "existing@example.test",
+                "password": original_password,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.client.get("/api/v1/auth/session").status_code, 200)
+        with self.sessions() as db:
+            user = db.query(User).filter_by(email="existing@example.test").one()
+            self.assertFalse(user.email_verified)
+            self.assertEqual(user.password_hash, original_hash)
+
+    def test_verification_disabled_requires_and_enforces_team_domain_allowlist(self):
+        settings.REQUIRE_EMAIL_VERIFICATION = False
+        settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS = []
+        missing_allowlist = self.client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "member@example.test",
+                "password": "a secure password 123",
+            },
+        )
+        self.assertEqual(missing_allowlist.status_code, 503)
+
+        settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS = ["example.test"]
+        external_domain = self.client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": "member@outside.test",
+                "password": "a secure password 123",
+            },
+        )
+        self.assertEqual(external_domain.status_code, 403)
 
     def test_cookie_access_is_project_scoped_and_mutations_require_csrf(self):
         email = self._register_and_verify()

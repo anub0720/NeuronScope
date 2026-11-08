@@ -142,16 +142,32 @@ def register_account(
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit(request, "register", 5, 3600, body.email)
-    _require_mail_configuration()
     email = _email(body.email)
-    if "@" not in email:
+    email_parts = email.rsplit("@", 1)
+    if len(email_parts) != 2 or not all(email_parts):
         raise HTTPException(422, "Enter a valid email address")
+    allowed_domains = settings.ALLOWED_REGISTRATION_EMAIL_DOMAINS
+    if allowed_domains and email_parts[1] not in allowed_domains:
+        raise HTTPException(403, "Registration is limited to approved email domains")
+    if not settings.REQUIRE_EMAIL_VERIFICATION and not allowed_domains:
+        raise HTTPException(
+            503,
+            "Registration requires ALLOWED_REGISTRATION_EMAIL_DOMAINS when "
+            "email verification is disabled",
+        )
     if db.query(User).filter_by(email=email).first():
         raise HTTPException(409, "An account with this email already exists")
+
+    if settings.REQUIRE_EMAIL_VERIFICATION:
+        _require_mail_configuration()
 
     user = User(email=email, password_hash=_hash_password(body.password))
     db.add(user)
     db.flush()
+    if not settings.REQUIRE_EMAIL_VERIFICATION:
+        db.commit()
+        return {"status": "registered"}
+
     raw_token, _token = _new_account_token(db, user, "verify_email")
     db.commit()
     verification_url = (
@@ -178,6 +194,8 @@ def resend_verification(
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit(request, "resend-verification", 5, 3600, body.email)
+    if not settings.REQUIRE_EMAIL_VERIFICATION:
+        return {"status": "verification_not_required"}
     _require_mail_configuration()
     user = db.query(User).filter_by(email=_email(body.email)).first()
     if user is None or user.email_verified or not _verify_password(
@@ -249,7 +267,7 @@ def login(
             user.locked_until = _now() + timedelta(minutes=15)
         db.commit()
         raise HTTPException(401, "Email or password is incorrect")
-    if not user.email_verified:
+    if settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified:
         raise HTTPException(403, "Verify your email before signing in")
     user.failed_login_attempts = 0
     user.locked_until = None
@@ -301,7 +319,7 @@ def request_password_reset(
     _require_mail_configuration()
     email = _email(body.email)
     user = db.query(User).filter_by(email=email).first()
-    if user and user.email_verified:
+    if user and (user.email_verified or not settings.REQUIRE_EMAIL_VERIFICATION):
         raw_token, _token = _new_account_token(db, user, "password_reset")
         db.commit()
         reset_url = (
@@ -338,7 +356,9 @@ def complete_password_reset(
     ):
         raise HTTPException(400, "Password reset link is invalid or expired")
     user = db.query(User).filter_by(id=token.user_id).first()
-    if user is None or not user.email_verified:
+    if user is None or (
+        settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified
+    ):
         raise HTTPException(400, "Password reset link is invalid or expired")
     user.password_hash = _hash_password(body.new_password)
     token.consumed_at = _now()
@@ -469,10 +489,10 @@ def poll_device_token(
         }
     if record.approved_user_id is None:
         raise HTTPException(428, "Authorization is pending")
-    user = db.query(User).filter_by(
-        id=record.approved_user_id, email_verified=True
-    ).first()
-    if user is None:
+    user = db.query(User).filter_by(id=record.approved_user_id).first()
+    if user is None or (
+        settings.REQUIRE_EMAIL_VERIFICATION and not user.email_verified
+    ):
         raise HTTPException(403, "Verified account required")
 
     if record.requested_project_id:
